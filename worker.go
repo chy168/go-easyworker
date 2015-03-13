@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/crowdmob/goamz/sqs"
 	"github.com/garyburd/redigo/redis"
@@ -8,6 +9,14 @@ import (
 	"sync"
 	"time"
 )
+
+var (
+	workers map[string]HandlerFunc
+)
+
+func init() {
+	workers = make(map[string]HandlerFunc)
+}
 
 type Handler interface {
 	HandleMessage(msg *sqs.Message) error
@@ -19,7 +28,11 @@ func (f HandlerFunc) HandleMessage(msg *sqs.Message) error {
 	return f(msg)
 }
 
-func Start(q *sqs.Queue, h Handler, t time.Duration, receiveMessageNum int) {
+func Register(class string, handler HandlerFunc) {
+	workers[class] = handler
+}
+
+func Start(q *sqs.Queue, t time.Duration, receiveMessageNum int) {
 	fmt.Println(fmt.Sprintf("worker: Start polling  [%s]", time.Now().Local()))
 	// init redis
 	pool := redis.Pool{
@@ -41,8 +54,9 @@ func Start(q *sqs.Queue, h Handler, t time.Duration, receiveMessageNum int) {
 			continue
 		}
 		if len(resp.Messages) > 0 {
+
 			fmt.Printf("\r")
-			run(q, h, resp, pool)
+			run(q, resp, pool)
 		} else {
 			fmt.Printf(".")
 		}
@@ -51,15 +65,30 @@ func Start(q *sqs.Queue, h Handler, t time.Duration, receiveMessageNum int) {
 }
 
 // poll launches goroutine per received message and wait for all message to be processed
-func run(q *sqs.Queue, h Handler, resp *sqs.ReceiveMessageResponse, redisPool redis.Pool) {
+// dispatcher
+func run(q *sqs.Queue, resp *sqs.ReceiveMessageResponse, redisPool redis.Pool) {
 	var wg sync.WaitGroup
 	for i := range resp.Messages {
 
 		wg.Add(1)
 		go func(m *sqs.Message) {
-			if err := handleMessage(q, m, h); err != nil {
-				log.Fatalf(" *** Message ID : %s  handleMessage error : %s", m.MessageId, err.Error())
+
+			var job BackgroundJob
+			err := json.Unmarshal([]byte(m.Body), &job)
+			if err != nil {
+				fmt.Printf("unmarshal job json error:%v\n", err)
 			}
+
+			if h, ok := workers[job.Type]; ok {
+
+				if err := handleMessage(q, m, h); err != nil {
+					log.Fatalf(" *** Message ID : %s  handleMessage error : %s", m.MessageId, err.Error())
+				}
+
+			} else {
+				fmt.Printf("check register job error:%v\n", err)
+			}
+
 			wg.Done()
 		}(&resp.Messages[i])
 	}
@@ -75,4 +104,9 @@ func handleMessage(q *sqs.Queue, m *sqs.Message, h Handler) error {
 	// delete
 	_, err = q.DeleteMessage(m)
 	return err
+}
+
+type BackgroundJob struct {
+	Type string
+	Data interface{}
 }
