@@ -1,9 +1,9 @@
-package worker
+package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/crowdmob/goamz/sqs"
+	"github.com/AdRoll/goamz/sqs"
 	"github.com/garyburd/redigo/redis"
 	"log"
 	"sync"
